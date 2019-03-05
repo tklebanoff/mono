@@ -115,10 +115,12 @@ mono_gc_warning (char *msg, GC_word arg)
 static void on_gc_notification (GC_EventType event);
 static void on_gc_heap_resize (size_t new_size);
 
+#if HAVE_BDWGC_GC
+
 #define ELEMENT_CHUNK_SIZE 128
 #define VECTOR_PROC_INDEX 6
 
-STATIC mse * GC_gcj_vector_proc (word * addr, mse * mark_stack_ptr,
+static mse * GC_gcj_vector_proc (word * addr, mse * mark_stack_ptr,
 	mse * mark_stack_limit, word env)
 {
 	MonoArray* a = NULL;
@@ -183,6 +185,8 @@ STATIC mse * GC_gcj_vector_proc (word * addr, mse * mark_stack_ptr,
 
 	return(mark_stack_ptr);
 }
+
+#endif
 
 void
 mono_gc_base_init (void)
@@ -289,7 +293,9 @@ mono_gc_base_init (void)
 	GC_finalizer_notifier = mono_gc_finalize_notify;
 
 	GC_init_gcj_malloc (5, NULL);
+#if HAVE_BDWGC_GC
 	GC_init_gcj_vector (VECTOR_PROC_INDEX, GC_gcj_vector_proc);
+#endif
 	GC_allow_register_threads ();
 
 	params_opts = mono_gc_params_get();
@@ -935,12 +941,14 @@ mono_gc_alloc_vector (MonoVTable *vtable, size_t size, uintptr_t max_length)
 		obj->obj.synchronisation = NULL;
 
 		memset ((char *) obj + sizeof (MonoObject), 0, size - sizeof (MonoObject));
+#if HAVE_BDWGC_GC
 	} else if (vtable->klass->element_class->valuetype && 
 		vtable->klass->element_class->gc_descr != GC_NO_DESCRIPTOR &&
 		vtable->domain == mono_get_root_domain ()) {
 		obj = (MonoArray *)GC_gcj_vector_malloc (size, vtable);
 		if (G_UNLIKELY (!obj))
 			return NULL;
+#endif
 	} else {
 		obj = (MonoArray *)GC_MALLOC (size);
 		if (G_UNLIKELY (!obj))
