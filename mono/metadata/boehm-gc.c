@@ -116,9 +116,11 @@ static void on_gc_notification (GC_EventType event);
 static void on_gc_heap_resize (size_t new_size);
 
 #if HAVE_BDWGC_GC
+#include <gc_vector.h>
 
-#define ELEMENT_CHUNK_SIZE 128
+#define ELEMENT_CHUNK_SIZE 256
 #define VECTOR_PROC_INDEX 6
+
 
 static mse * GC_gcj_vector_proc (word * addr, mse * mark_stack_ptr,
 	mse * mark_stack_limit, word env)
@@ -138,52 +140,25 @@ static mse * GC_gcj_vector_proc (word * addr, mse * mark_stack_ptr,
 	if (!a->max_length)
 		return mark_stack_ptr;
 
-	mono_array_size_t length = a->max_length;
-	MonoClass* array_type = a->obj.vtable->klass;
-	MonoClass* element_type = a->obj.vtable->klass->element_class;
-	GC_descr element_desc = element_type->gc_descr;
-	g_assert ((element_desc & GC_DS_TAGS) == GC_DS_BITMAP);
-
-	/* create new descriptor that is shifted two bits to account 
-	 * for lack of object header. Descriptors for value types include
-	 * the object header for boxed values */
-
-	/* remove tags */
-	GC_descr element_desc_shifted = element_desc & ~(GC_DS_TAGS);
-	/* shift actual bits */
-	element_desc_shifted = element_desc_shifted << 2;
-	/* add back tag to indicate descriptor is a bitmap */
-	element_desc_shifted |= GC_DS_BITMAP;
-
-	int words_per_element = array_type->sizes.element_size / BYTES_PER_WORD;
-
-	g_assert (element_type->valuetype);
 	g_assert (GC_is_marked (a));
 
+	mono_array_size_t length = a->max_length;
+	MonoClass* array_type = a->obj.vtable->klass;
+	MonoClass *element_type = array_type->element_class;
+	GC_descr element_desc = element_type->gc_descr;
+
+	g_assert ((element_desc & GC_DS_TAGS) == GC_DS_BITMAP);
+	g_assert (element_type->valuetype);
+
+	int words_per_element = array_type->sizes.element_size / BYTES_PER_WORD;
+	word *actual_start = (word *)a->vector;
+
 	/* start at first element or resume from last iteration */
-	word* start = env ? addr : (word*)a->vector;
+	word *start = env ? addr : actual_start;
 	/* end at last element or max chunk size */
-	word* actual_end = (word*)a->vector + length * words_per_element;
-	ptrdiff_t remaining_elements = (actual_end - start) / words_per_element;
+	word *actual_end = actual_start + length * words_per_element;
 
-	word* end = actual_end;
-
-	if (remaining_elements > ELEMENT_CHUNK_SIZE) {
-		mark_stack_ptr++;
-		mark_stack_ptr->mse_descr.w = GC_MAKE_PROC (VECTOR_PROC_INDEX, 1 /* continue processing */);
-		mark_stack_ptr->mse_start = (ptr_t)(start + ELEMENT_CHUNK_SIZE * words_per_element);
-
-		/* only process chunk number of items */
-		end = start + ELEMENT_CHUNK_SIZE * words_per_element;
-	}
-	for (word* element = start; element < end; element += words_per_element) {
-		mark_stack_ptr++;
-
-		mark_stack_ptr->mse_start = (ptr_t)(element);
-		mark_stack_ptr->mse_descr.w = element_desc_shifted;
-	}
-
-	return(mark_stack_ptr);
+	return GC_gcj_vector_mark_proc (mark_stack_ptr, element_desc, start, actual_end, words_per_element);
 }
 
 #endif
@@ -944,7 +919,8 @@ mono_gc_alloc_vector (MonoVTable *vtable, size_t size, uintptr_t max_length)
 #if HAVE_BDWGC_GC
 	} else if (vtable->klass->element_class->valuetype && 
 		vtable->klass->element_class->gc_descr != GC_NO_DESCRIPTOR &&
-		vtable->domain == mono_get_root_domain ()) {
+		vtable->domain == mono_get_root_domain () /* &&
+		max_length > 50 */) {
 		obj = (MonoArray *)GC_gcj_vector_malloc (size, vtable);
 		if (G_UNLIKELY (!obj))
 			return NULL;
